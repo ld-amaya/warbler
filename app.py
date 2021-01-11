@@ -4,8 +4,8 @@ from flask import Flask, render_template, request, flash, redirect, session, g
 from flask_debugtoolbar import DebugToolbarExtension
 from sqlalchemy.exc import IntegrityError
 
-from forms import UserAddForm, LoginForm, MessageForm
-from models import db, connect_db, User, Message
+from forms import UserAddForm, LoginForm, MessageForm, UserProfileForm, PasswordForm
+from models import db, connect_db, User, Message, Likes
 
 CURR_USER_KEY = "curr_user"
 
@@ -30,7 +30,7 @@ connect_db(app)
 
 
 @app.before_request
-def add_user_to_g():
+def add_user_to_gobal():
     """If we're logged in, add curr user to Flask global."""
 
     if CURR_USER_KEY in session:
@@ -114,6 +114,9 @@ def logout():
     """Handle logout of user."""
 
     # IMPLEMENT THIS
+    do_logout()
+    flash(f"You have successfully logout!", "success")
+    return redirect("/")
 
 
 ##############################################################################
@@ -207,11 +210,28 @@ def stop_following(follow_id):
     return redirect(f"/users/{g.user.id}/following")
 
 
-@app.route('/users/profile', methods=["GET", "POST"])
-def profile():
+@app.route('/users/profile/<int:user_id>', methods=["GET", "POST"])
+def profile(user_id):
     """Update profile for current user."""
 
     # IMPLEMENT THIS
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+    user = User.query.get_or_404(user_id)
+    form = UserProfileForm(obj=user)
+
+    if form.validate_on_submit():
+        user = User.authenticate(user.username, form.password.data)
+        if user:
+            user = User.updateprofile(user, form)
+            if user:
+                flash("Profile Udpated.", "success")
+                return redirect(f"/users/{g.user.id}")
+        flash("Incorrect Password, profile not udpated!", "danger")
+        return redirect("/")
+    return render_template("/users/profile.html", form=form, user=user)
 
 
 @app.route('/users/delete', methods=["POST"])
@@ -276,7 +296,47 @@ def messages_destroy(message_id):
     db.session.delete(msg)
     db.session.commit()
 
+    flash("Message deleted", "success")
     return redirect(f"/users/{g.user.id}")
+
+##############################################################################
+# Like routes:
+
+
+@app.route("/users/<int:user_id>/likes", methods=["GET"])
+def display_like_messages(user_id):
+    """Display liked messages"""
+
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+    user = User.query.get_or_404(user_id)
+    return render_template('/users/likes.html', user=user, likes=user.likes)
+
+
+@app.route("/users/add_like/<int:msg_id>", methods=["POST"])
+def message_like(msg_id):
+    """Handles user like messages"""
+
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+    # Get the likes of the message
+    like = Likes.query.filter_by(message_id=msg_id).first()
+    message = Message.query.get(msg_id)
+    if message.user.id != g.user.id:
+        if like:
+            db.session.delete(like)
+        else:
+            like = Likes(
+                user_id=g.user.id,
+                message_id=msg_id
+            )
+            db.session.add(like)
+        db.session.commit()
+    return redirect("/")
 
 
 ##############################################################################
@@ -292,13 +352,17 @@ def homepage():
     """
 
     if g.user:
+        # Get the folliwing id's and include loggedin user id
+        following_ids = [f.id for f in g.user.following] + [g.user.id]
         messages = (Message
                     .query
+                    .filter(Message.user_id.in_(following_ids))
                     .order_by(Message.timestamp.desc())
                     .limit(100)
                     .all())
 
-        return render_template('home.html', messages=messages)
+        likes = [like.id for like in g.user.likes]
+        return render_template('home.html', messages=messages, likes=likes)
 
     else:
         return render_template('home-anon.html')
